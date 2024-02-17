@@ -1,19 +1,19 @@
 The readme file for the original FQ-ViT is renamed as README_FQViT.md
 
-## MobileViT with Quantized Conv2D & MLP
+# MobileViT with Quantized Conv2D & MLP
 
 **MobileViT(https://huggingface.co/apple/mobilevit-small)**
 
-# Accuracy v.s. Bit-widths test results on ImageNet
+## Accuracy v.s. Bit-widths test results on ImageNet
 <div align=center>
-  <img src="./figures/top1acc.png" width="400px" />
+  <img src="./figures/top1acc.png" width="800px" />
 </div>
 
 <div align=center>
-  <img src="./figures/top5acc.png" width="400px" />
+  <img src="./figures/top5acc.png" width="800px" />
 </div>
 
-# Storage and Computation comparison
+## Storage and Computation comparison
 
 The full-precision mobilevit takes 21.328 MB of storage, while the signed 8-bit mobilevit only takes 5.464MB of storage.
 
