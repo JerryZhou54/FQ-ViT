@@ -5,12 +5,14 @@ import time
 
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from PIL import Image
 
 from config import Config
 from models import *
+from mobilevit_quant import QMobileViT
 
 parser = argparse.ArgumentParser(description='FQ-ViT')
 
@@ -46,7 +48,6 @@ parser.add_argument('--print-freq',
                     type=int,
                     help='print frequency')
 parser.add_argument('--seed', default=0, type=int, help='seed')
-
 
 def str2model(name):
     d = {
@@ -87,7 +88,10 @@ def main():
 
     device = torch.device(args.device)
     cfg = Config(args.ptf, args.lis, args.quant_method)
-    model = str2model(args.model)(pretrained=True, cfg=cfg)
+    #model = str2model(args.model)(pretrained=True, cfg=cfg)
+    from transformers import MobileViTForImageClassification
+    mobilevit = MobileViTForImageClassification.from_pretrained("apple/mobilevit-small")
+    model = QMobileViT(mobilevit, cfg)
     model = model.to(device)
 
     # Note: Different models have different strategies of data preprocessing.
@@ -106,7 +110,7 @@ def main():
         crop_pct = 0.9
     else:
         raise NotImplementedError
-
+    
     train_transform = build_transform(mean=mean, std=std, crop_pct=crop_pct)
     val_transform = build_transform(mean=mean, std=std, crop_pct=crop_pct)
 
@@ -114,11 +118,22 @@ def main():
     traindir = os.path.join(args.data, 'train')
     valdir = os.path.join(args.data, 'val')
 
-    val_dataset = datasets.ImageFolder(valdir, val_transform)
+    img_dataset = datasets.ImageFolder(valdir)
+    val_dataset = CustomDataset(img_dataset)
+    #val_dataset = datasets.ImageNet(root=valdir, split='val', transform=val_transform)
+    """
+    from datasets import load_dataset
+    from PIL import Image
+    val_dataset = load_dataset("evanarlian/imagenet_1k_resized_256", split="valid", cache_dir="/home/hice1/wzhou322/scratch/.cache/huggingface/datasets")
+    def transform(imgs):
+        imgs['image'] = [feature_extractor(images=img.convert('RGB'), return_tensors="pt") for img in imgs['image']]
+        return imgs
+    val_dataset.set_transform(transform)
+    """
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.val_batchsize,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
     )
@@ -129,7 +144,10 @@ def main():
     criterion = nn.CrossEntropyLoss().to(device)
 
     if args.quant:
-        train_dataset = datasets.ImageFolder(traindir, train_transform)
+        #train_dataset = datasets.ImageFolder(traindir, train_transform)
+        #train_dataset = datasets.ImageNet(root=traindir, split='train', transform=train_transform)
+        img_train_dataset = datasets.ImageFolder(traindir)
+        train_dataset = CustomDataset(img_train_dataset)
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=args.calib_batchsize,
@@ -138,12 +156,13 @@ def main():
             pin_memory=True,
             drop_last=True,
         )
+        print("Finish building train dataloader")
         # Get calibration set.
         image_list = []
         for i, (data, target) in enumerate(train_loader):
             if i == args.calib_iter:
                 break
-            data = data.to(device)
+            data = data.reshape((-1, 3, 256, 256)).to(device)
             image_list.append(data)
 
         print('Calibrating...')
@@ -154,7 +173,7 @@ def main():
                     # This is used for OMSE method to
                     # calculate minimum quantization error
                     model.model_open_last_calibrate()
-                output = model(image)
+                output = model(image).logits
         model.model_close_calibrate()
         model.model_quant()
 
@@ -174,11 +193,15 @@ def validate(args, val_loader, model, criterion, device):
 
     val_start_time = end = time.time()
     for i, (data, target) in enumerate(val_loader):
-        data = data.to(device)
+        #data = batch['image']
+        #target = batch['label']
+        #data['pixel_values'] = data['pixel_values'].reshape((args.val_batchsize, 3, 256, 256)).to(device)
+        data = data.reshape((-1, 3, 256, 256)).to(device)
         target = target.to(device)
 
         with torch.no_grad():
-            output = model(data)
+            #output = model(**data).logits
+            output = model(data).logits
         loss = criterion(output, target)
 
         # measure accuracy and record loss
@@ -235,7 +258,7 @@ def accuracy(output, target, topk=(1, )):
     maxk = max(topk)
     batch_size = target.size(0)
 
-    _, pred = output.topk(maxk, 1, True, True)
+    _, pred = output.topk(maxk, -1, True, True)
     pred = pred.t()
     correct = pred.eq(target.reshape(1, -1).expand_as(pred))
 
@@ -278,6 +301,67 @@ def build_transform(input_size=224,
     t.append(transforms.Normalize(mean, std))
     return transforms.Compose(t)
 
+from transformers import MobileViTImageProcessor
+class CustomDataset(Dataset):
+    def __init__(self, image_folder_dataset):
+        self.image_folder_dataset = image_folder_dataset
+        self.feature_extractor = MobileViTImageProcessor.from_pretrained("apple/mobilevit-small")
+    
+    def __len__(self):
+        return len(self.image_folder_dataset)
+
+    def __getitem__(self, idx):
+        image, target = self.image_folder_dataset[idx]
+        image = self.feature_extractor(images=image.convert("RGB"), return_tensors="pt")["pixel_values"]
+        return image, target
+
+def get_model_size(model):
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+    buffer_size = 0
+    for buffer in model.buffers():
+        buffer_size += buffer.nelement() * buffer.element_size()
+
+    size_all_mb = (param_size + buffer_size) / 1024**2
+    print('model size: {:.3f}MB'.format(size_all_mb))
+
+import numpy as np
+def measure_inference_time(model):
+    device = torch.device("cuda")
+    model = model.to(device)
+    dummy_input = torch.randn(1,3,256,256,dtype=torch.float).to(device)
+
+    # INIT LOGGERS
+    starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    repetitions = 300
+    timings=np.zeros((repetitions,1))
+    #GPU-WARM-UP
+    for _ in range(10):
+        _ = model(dummy_input)
+    # MEASURE PERFORMANCE
+    with torch.no_grad():
+        for rep in range(repetitions):
+            starter.record()
+            _ = model(dummy_input)
+            ender.record()
+            # WAIT FOR GPU SYNC
+            torch.cuda.synchronize()
+            curr_time = starter.elapsed_time(ender)
+            timings[rep] = curr_time
+
+    mean_syn = np.sum(timings) / repetitions
+    std_syn = np.std(timings)
+    print(mean_syn)
+
+from ptflops import get_model_complexity_info
+def get_model_flops(model):
+    device = torch.device("cuda")
+    model = model.to(device)
+    macs, params = get_model_complexity_info(model, (3, 256, 256), as_strings=True,
+                                           print_per_layer_stat=False, verbose=False)
+    print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+    print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
 if __name__ == '__main__':
     main()
