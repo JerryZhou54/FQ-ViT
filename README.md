@@ -1,4 +1,4 @@
-The readme file for the original FQ-ViT is renamed as README_FQViT.md
+The readme file for the original FQ-ViT is renamed as README_FQViT.md. All the modified code is in test_quant.py and mobilevit_quant.py.
 
 # MobileViT with Quantized Conv2D & MLP
 
