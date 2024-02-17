@@ -6,11 +6,11 @@ The readme file for the original FQ-ViT is renamed as README_FQViT.md
 
 ## Accuracy v.s. Bit-widths test results on ImageNet
 <div align=center>
-  <img src="./figures/top1acc.png" width="800px" />
+  <img src="./figures/top1acc.png" width="500px" />
 </div>
 
 <div align=center>
-  <img src="./figures/top5acc.png" width="800px" />
+  <img src="./figures/top5acc.png" width="500px" />
 </div>
 
 ## Storage and Computation comparison
